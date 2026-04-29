@@ -63,7 +63,6 @@ async def _send_slack_alert(payload: BolnaExecutionPayload) -> None:
 
 @router.post("/bolna/call-ended")
 async def handle_bolna_webhook(
-    payload: BolnaExecutionPayload,
     background_tasks: BackgroundTasks,
     request: Request,
 ) -> dict:
@@ -74,12 +73,32 @@ async def handle_bolna_webhook(
     status changes (queued → initiated → in-progress → completed …).
     We only act on terminal statuses so we alert exactly once per call.
     """
+    import json as _json
+
+    raw = await request.body()
+    try:
+        raw_data = _json.loads(raw)
+    except Exception:
+        raw_data = {}
+
+    # Log the full raw payload so we can inspect every field Bolna sends
     log_with_context(
         logger, "info",
-        "Webhook received",
+        "Raw webhook payload received",
+        raw=raw_data,
+    )
+
+    payload = BolnaExecutionPayload(**raw_data)
+
+    log_with_context(
+        logger, "info",
+        "Webhook parsed",
         call_id=payload.id,
         agent_id=payload.agent_id,
         status=payload.status,
+        conversation_time=payload.conversation_time,
+        telephony_data=payload.telephony_data.model_dump() if payload.telephony_data else None,
+        duration_resolved=payload.duration_seconds,
         client_ip=request.client.host if request.client else "unknown",
     )
 
