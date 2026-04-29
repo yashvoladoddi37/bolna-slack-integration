@@ -75,30 +75,16 @@ async def handle_bolna_webhook(
     """
     import json as _json
 
-    raw = await request.body()
-    try:
-        raw_data = _json.loads(raw)
-    except Exception:
-        raw_data = {}
-
-    # Log the full raw payload so we can inspect every field Bolna sends
-    log_with_context(
-        logger, "info",
-        "Raw webhook payload received",
-        raw=raw_data,
-    )
-
+    raw_data = _json.loads(await request.body())
     payload = BolnaExecutionPayload(**raw_data)
 
     log_with_context(
         logger, "info",
-        "Webhook parsed",
+        "Webhook received",
         call_id=payload.id,
         agent_id=payload.agent_id,
         status=payload.status,
-        conversation_time=payload.conversation_time,
-        telephony_data=payload.telephony_data.model_dump() if payload.telephony_data else None,
-        duration_resolved=payload.duration_seconds,
+        duration_seconds=payload.duration_seconds,
         client_ip=request.client.host if request.client else "unknown",
     )
 
@@ -112,7 +98,6 @@ async def handle_bolna_webhook(
             "call_id": payload.id,
         }
 
-    # Non-terminal or missing id — acknowledge but do nothing
     return {
         "status": "ignored",
         "message": f"Status '{payload.status}' is not terminal — no alert sent",
