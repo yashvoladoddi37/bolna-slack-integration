@@ -11,11 +11,9 @@ services:
         sync: false
       - key: SLACK_WEBHOOK_URL
         sync: false
+      - key: BOLNA_API_BASE_URL
+        value: https://api.bolna.ai
       - key: ENVIRONMENT
         value: production
       - key: LOG_LEVEL
         value: INFO
-      - key: BOLNA_API_BASE_URL
-        value: https://api.bolna.dev
-
-# Made with Bob

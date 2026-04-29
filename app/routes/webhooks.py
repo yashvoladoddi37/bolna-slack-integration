@@ -1,8 +1,7 @@
-"""Webhook endpoints for receiving Bolna events"""
+"""Webhook endpoints for receiving Bolna execution events"""
 
-from fastapi import APIRouter, HTTPException, BackgroundTasks, Request
-from app.models import BolnaWebhookPayload
-from app.services.bolna_client import BolnaClient, BolnaAPIError
+from fastapi import APIRouter, BackgroundTasks, Request
+from app.models import BolnaExecutionPayload
 from app.services.slack_client import SlackClient, SlackAPIError
 from app.config import settings
 from app.utils.logger import setup_logger, log_with_context
@@ -11,145 +10,98 @@ from app.utils.logger import setup_logger, log_with_context
 logger = setup_logger(__name__, settings.log_level)
 router = APIRouter(prefix="/webhook", tags=["webhooks"])
 
-# Initialize clients
-bolna_client = BolnaClient()
 slack_client = SlackClient()
 
+# Statuses that mean a call is truly finished
+TERMINAL_STATUSES = {
+    "completed",
+    "call-disconnected",
+    "failed",
+    "no-answer",
+    "busy",
+    "canceled",
+    "stopped",
+    "error",
+    "balance-low",
+}
 
-async def process_call_ended(call_id: str) -> None:
+
+async def _send_slack_alert(payload: BolnaExecutionPayload) -> None:
     """
-    Background task to process call ended event
-    
-    Args:
-        call_id: Unique call identifier
+    Background task: format execution data and post to Slack.
+    Called only for terminal-status payloads that have an execution id.
     """
     try:
-        # Fetch call details from Bolna API
         log_with_context(
             logger, "info",
-            "Processing call ended event",
-            call_id=call_id
+            "Sending Slack alert for completed call",
+            call_id=payload.id,
+            agent_id=payload.agent_id,
+            status=payload.status,
         )
-        
-        call_details = await bolna_client.get_call_details(call_id)
-        
-        # Send alert to Slack
-        await slack_client.send_call_alert(call_details)
-        
+        await slack_client.send_call_alert(payload)
         log_with_context(
             logger, "info",
-            "Call ended event processed successfully",
-            call_id=call_id
+            "Slack alert sent successfully",
+            call_id=payload.id,
         )
-        
-    except BolnaAPIError as e:
-        log_with_context(
-            logger, "error",
-            "Failed to fetch call details from Bolna",
-            call_id=call_id,
-            error=str(e)
-        )
-        
     except SlackAPIError as e:
         log_with_context(
             logger, "error",
             "Failed to send Slack alert",
-            call_id=call_id,
-            error=str(e)
+            call_id=payload.id,
+            error=str(e),
         )
-        
     except Exception as e:
         log_with_context(
             logger, "error",
-            "Unexpected error processing call ended event",
-            call_id=call_id,
-            error=str(e)
+            "Unexpected error in Slack alert task",
+            call_id=payload.id,
+            error=str(e),
         )
 
 
 @router.post("/bolna/call-ended")
-async def handle_call_ended(
-    payload: BolnaWebhookPayload,
+async def handle_bolna_webhook(
+    payload: BolnaExecutionPayload,
     background_tasks: BackgroundTasks,
-    request: Request
-) -> dict[str, str]:
+    request: Request,
+) -> dict:
     """
-    Webhook endpoint for Bolna call ended events
-    
-    This endpoint:
-    1. Receives webhook from Bolna when a call ends
-    2. Validates the payload
-    3. Extracts the call ID
-    4. Processes the event in the background (fetch details + send Slack alert)
-    5. Returns immediate response to Bolna
-    
-    Args:
-        payload: Webhook payload from Bolna
-        background_tasks: FastAPI background tasks
-        request: HTTP request object
-    
-    Returns:
-        Success response
-    
-    Raises:
-        HTTPException: If payload validation fails
+    Receives Bolna webhook POSTs.
+
+    Bolna sends the full execution object to this URL every time a call
+    status changes (queued → initiated → in-progress → completed …).
+    We only act on terminal statuses so we alert exactly once per call.
     """
     log_with_context(
         logger, "info",
-        "Received webhook",
-        event=payload.event,
-        call_id=payload.call_id,
+        "Webhook received",
+        call_id=payload.id,
         agent_id=payload.agent_id,
-        client_ip=request.client.host if request.client else "unknown"
+        status=payload.status,
+        client_ip=request.client.host if request.client else "unknown",
     )
-    
-    # Validate event type
-    if payload.event != "call.ended":
-        log_with_context(
-            logger, "warning",
-            "Received unexpected event type",
-            event=payload.event,
-            call_id=payload.call_id
-        )
-        raise HTTPException(
-            status_code=400,
-            detail=f"Unexpected event type: {payload.event}"
-        )
-    
-    # Validate call_id
-    if not payload.call_id:
-        log_with_context(
-            logger, "error",
-            "Missing call_id in webhook payload",
-            event=payload.event
-        )
-        raise HTTPException(
-            status_code=400,
-            detail="Missing call_id in payload"
-        )
-    
-    # Process in background to avoid blocking the webhook response
-    background_tasks.add_task(process_call_ended, payload.call_id)
-    
-    # Return immediate success response
+
+    is_terminal = payload.status in TERMINAL_STATUSES
+
+    if is_terminal and payload.id:
+        background_tasks.add_task(_send_slack_alert, payload)
+        return {
+            "status": "accepted",
+            "message": f"Processing call-ended alert for {payload.id}",
+            "call_id": payload.id,
+        }
+
+    # Non-terminal or missing id — acknowledge but do nothing
     return {
-        "status": "success",
-        "message": "Webhook received and processing",
-        "call_id": payload.call_id
+        "status": "ignored",
+        "message": f"Status '{payload.status}' is not terminal — no alert sent",
+        "call_id": payload.id,
     }
 
 
 @router.get("/health")
-async def health_check() -> dict[str, str]:
-    """
-    Health check endpoint
-    
-    Returns:
-        Health status
-    """
-    return {
-        "status": "healthy",
-        "service": "bolna-slack-integration"
-    }
-
-# Made with Bob
+async def health_check() -> dict:
+    """Health check endpoint"""
+    return {"status": "healthy", "service": "bolna-slack-integration"}

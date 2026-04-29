@@ -1,189 +1,163 @@
-"""Slack API client for sending alerts"""
+"""Slack client — sends call-ended alerts via Incoming Webhooks"""
 
 import httpx
 from typing import Any
+from datetime import datetime, timezone
+
 from app.config import settings
-from app.models import BolnaCallDetails, SlackMessage
+from app.models import BolnaExecutionPayload, SlackMessage
 from app.utils.logger import setup_logger, log_with_context
-from app.utils.formatters import format_duration, format_transcript
+from app.utils.formatters import format_duration, truncate_text
 
 
 logger = setup_logger(__name__, settings.log_level)
 
 
 class SlackAPIError(Exception):
-    """Custom exception for Slack API errors"""
+    """Raised when a Slack Incoming Webhook call fails"""
     pass
 
 
 class SlackClient:
-    """Client for sending messages to Slack via Incoming Webhooks"""
-    
+    """Sends messages to Slack via Incoming Webhooks"""
+
     def __init__(self):
-        """Initialize Slack client"""
         self.webhook_url = settings.slack_webhook_url
         self.timeout = settings.request_timeout
         self.max_transcript_length = settings.max_transcript_length
-        
         logger.info("Slack client initialized")
-    
-    def _format_message(self, call_data: BolnaCallDetails) -> SlackMessage:
-        """
-        Format call data into Slack message with blocks
-        
-        Args:
-            call_data: Complete call details
-        
-        Returns:
-            Formatted Slack message
-        """
-        # Format duration
-        duration_str = format_duration(call_data.duration)
-        
-        # Format transcript
-        transcript_str = format_transcript(
-            call_data.transcript,
-            self.max_transcript_length
+
+    # ------------------------------------------------------------------
+    # Message formatting
+    # ------------------------------------------------------------------
+
+    def _build_message(self, data: BolnaExecutionPayload) -> SlackMessage:
+        """Build a rich Block-Kit Slack message from an execution payload."""
+
+        # ---- Duration ---------------------------------------------------
+        duration_secs = data.duration_seconds
+        duration_str = format_duration(duration_secs) if duration_secs is not None else "N/A"
+
+        # ---- Transcript -------------------------------------------------
+        raw_transcript = data.transcript or "No transcript available"
+        transcript_str = truncate_text(
+            raw_transcript,
+            max_length=self.max_transcript_length,
+            suffix="\n…(truncated)",
         )
-        
-        # Build Slack blocks
+
+        # ---- Timestamp --------------------------------------------------
+        ts_raw = data.updated_at or data.created_at
+        if ts_raw:
+            try:
+                # Parse ISO-8601; replace Z → +00:00 for older Pythons
+                dt = datetime.fromisoformat(ts_raw.replace("Z", "+00:00"))
+                ts_str = dt.strftime("%Y-%m-%d %H:%M:%S UTC")
+            except ValueError:
+                ts_str = ts_raw
+        else:
+            ts_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+
+        # ---- Blocks -----------------------------------------------------
         blocks: list[dict[str, Any]] = [
-            # Header
             {
                 "type": "header",
                 "text": {
                     "type": "plain_text",
                     "text": "📞 Bolna Call Ended",
-                    "emoji": True
-                }
+                    "emoji": True,
+                },
             },
-            # Call details section
             {
                 "type": "section",
                 "fields": [
                     {
                         "type": "mrkdwn",
-                        "text": f"*Call ID:*\n`{call_data.id}`"
+                        "text": f"*Call ID:*\n`{data.id or 'N/A'}`",
                     },
                     {
                         "type": "mrkdwn",
-                        "text": f"*Agent ID:*\n`{call_data.agent_id}`"
+                        "text": f"*Agent ID:*\n`{data.agent_id or 'N/A'}`",
                     },
                     {
                         "type": "mrkdwn",
-                        "text": f"*Duration:*\n{duration_str}"
+                        "text": f"*Duration:*\n{duration_str}",
                     },
                     {
                         "type": "mrkdwn",
-                        "text": f"*Status:*\n{call_data.status.capitalize()}"
-                    }
-                ]
+                        "text": f"*Status:*\n{(data.status or 'unknown').replace('-', ' ').title()}",
+                    },
+                ],
             },
-            # Divider
-            {
-                "type": "divider"
-            },
-            # Transcript section
+            {"type": "divider"},
             {
                 "type": "section",
                 "text": {
                     "type": "mrkdwn",
-                    "text": f"*Transcript:*\n```\n{transcript_str}\n```"
-                }
+                    "text": f"*Transcript:*\n```\n{transcript_str}\n```",
+                },
             },
-            # Footer divider
-            {
-                "type": "divider"
-            },
-            # Context/footer
+            {"type": "divider"},
             {
                 "type": "context",
                 "elements": [
                     {
                         "type": "mrkdwn",
-                        "text": f"Call ended at {call_data.ended_at.strftime('%Y-%m-%d %H:%M:%S UTC')}"
+                        "text": f"Call ended at {ts_str}",
                     }
-                ]
-            }
+                ],
+            },
         ]
-        
-        # Create message
-        message = SlackMessage(
-            text=f"Bolna Call Ended - {call_data.id}",  # Fallback text
-            blocks=blocks
+
+        return SlackMessage(
+            text=f"Bolna Call Ended — ID: {data.id}",
+            blocks=blocks,
         )
-        
-        return message
-    
-    async def send_call_alert(self, call_data: BolnaCallDetails) -> bool:
+
+    # ------------------------------------------------------------------
+    # Send
+    # ------------------------------------------------------------------
+
+    async def send_call_alert(self, data: BolnaExecutionPayload) -> bool:
+        """Post a formatted call-ended alert to Slack.
+
+        Returns True on success, raises SlackAPIError on failure.
         """
-        Send formatted call alert to Slack
-        
-        Args:
-            call_data: Complete call details
-        
-        Returns:
-            True if message sent successfully, False otherwise
-        
-        Raises:
-            SlackAPIError: If Slack API request fails
-        """
+        message = self._build_message(data)
+
         log_with_context(
             logger, "info",
-            "Sending Slack alert",
-            call_id=call_data.id,
-            agent_id=call_data.agent_id
+            "Posting to Slack webhook",
+            call_id=data.id,
+            agent_id=data.agent_id,
         )
-        
+
         try:
-            # Format message
-            message = self._format_message(call_data)
-            
-            # Send to Slack
             async with httpx.AsyncClient(timeout=self.timeout) as client:
                 response = await client.post(
                     self.webhook_url,
                     json=message.model_dump(),
-                    headers={"Content-Type": "application/json"}
+                    headers={"Content-Type": "application/json"},
                 )
-                
-                # Check response
-                if response.status_code == 200:
-                    log_with_context(
-                        logger, "info",
-                        "Slack alert sent successfully",
-                        call_id=call_data.id,
-                        status_code=response.status_code
-                    )
-                    return True
-                else:
-                    log_with_context(
-                        logger, "error",
-                        "Failed to send Slack alert",
-                        call_id=call_data.id,
-                        status_code=response.status_code,
-                        response=response.text
-                    )
-                    raise SlackAPIError(
-                        f"Slack API returned status {response.status_code}: {response.text}"
-                    )
-                    
-        except httpx.RequestError as e:
-            log_with_context(
-                logger, "error",
-                "Network error sending Slack alert",
-                call_id=call_data.id,
-                error=str(e)
-            )
-            raise SlackAPIError(f"Failed to send Slack message: {str(e)}")
-        
-        except Exception as e:
-            log_with_context(
-                logger, "error",
-                "Unexpected error sending Slack alert",
-                call_id=call_data.id,
-                error=str(e)
-            )
-            raise SlackAPIError(f"Unexpected error: {str(e)}")
 
-# Made with Bob
+            if response.status_code == 200 and response.text == "ok":
+                log_with_context(
+                    logger, "info",
+                    "Slack alert posted successfully",
+                    call_id=data.id,
+                )
+                return True
+
+            # Slack returns plain text "ok" on success; anything else is an error
+            raise SlackAPIError(
+                f"Slack returned HTTP {response.status_code}: {response.text}"
+            )
+
+        except SlackAPIError:
+            raise
+
+        except httpx.RequestError as e:
+            raise SlackAPIError(f"Network error posting to Slack: {e}") from e
+
+        except Exception as e:
+            raise SlackAPIError(f"Unexpected error: {e}") from e

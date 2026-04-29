@@ -77,5 +77,3 @@ def log_with_context(logger: logging.Logger, level: str, message: str, **context
     """
     log_method = getattr(logger, level.lower())
     log_method(message, extra={"context": context})
-
-# Made with Bob
