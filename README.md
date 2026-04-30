@@ -5,6 +5,14 @@ including the call **ID**, **agent ID**, **duration**, and full **transcript**.
 
 ---
 
+## 🎬 Live Demo
+
+https://github.com/yashvoladoddi37/bolna-slack-integration/raw/main/demo/bolna-ie-demo.mp4
+
+> 📄 **[Open transcript side-by-side →](demo/transcript.md)** *(recommended while watching — the Slack alert appears ~30–40 s after the call ends)*
+
+---
+
 ## How it works
 
 ```
@@ -81,7 +89,7 @@ Each alert contains:
 |-------|--------|
 | **Call ID** | `id` from execution payload |
 | **Agent ID** | `agent_id` from execution payload |
-| **Duration** | `telephony_data.duration` (seconds → human-readable) |
+| **Duration** | `conversation_duration` / `telephony_data.duration` (seconds → human-readable) |
 | **Status** | `status` field |
 | **Transcript** | `transcript` (plain text, truncated at 3000 chars) |
 
