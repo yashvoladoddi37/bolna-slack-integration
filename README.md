@@ -13,6 +13,21 @@ https://github.com/yashvoladoddi37/bolna-slack-integration/raw/main/demo/bolna-i
 
 ---
 
+## 📋 Assignment Requirements — Live Call Output
+
+The integration captures all four required fields from a real Bolna call:
+
+| Field | Value |
+|-------|-------|
+| **`id`** | `b744ae6a-7093-49e1-94eb-1492c7e5e511` |
+| **`agent_id`** | `7baf87d2-ebb1-4000-902e-dd5bf506773a` |
+| **`duration`** | `2m 46s` |
+| **`transcript`** | [View transcript →](demo/transcript.md) |
+
+> **Status:** `Completed` — alert fired once, immediately after the call ended.
+
+---
+
 ## How it works
 
 ```
